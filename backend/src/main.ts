@@ -22,11 +22,6 @@ const dictionaryWordFullIndex: any = new Index({tokenize: 'full', profile, worke
 
 // Index to search the definitions
 const dictionaryDefinitionIndex: any = new Index({tokenize: 'strict', profile, worker, resolution, async, optimize});
-
-const app = express();
-app.use(cors());
-
-
 type Word = string;
 type Definition = string
 type DefinitionWrapper = {definition: Definition, idx: number};
@@ -34,6 +29,22 @@ type DefinitionWrapper = {definition: Definition, idx: number};
 const dictionaryEntries: [string, DefinitionWrapper][] = [];
 const dictionaryMap = new Map<Word, DefinitionWrapper>();
 
+type WordDefinition = {
+    word: Word;
+    definition: Definition
+}
+
+// class DictionaryStore {
+//     get(word: string): WordDefinition {
+//         return {word: 'a', definition: 'b'}
+//     }
+// }
+
+/**
+ * 
+ * Load the from the 21MB `./data/dictionary.json` file to the map, entries array and search indexes
+ * 
+ */
 function loadData() {
     const mbStr = fs.statSync('./data/dictionary.json').size.toMegaByteString();
 
@@ -56,6 +67,13 @@ function loadData() {
     Log.memory();
 }
 
+/**
+ * Adds a Word and a Definition to the store
+ * 
+ * @param word 
+ * @param definition 
+ * @param idx 
+ */
 function addWordDefinition(word: Word, definition: Definition, idx: number) {
     // Creating reusable wrapper to avoid double memory creation of both map and array of entries definition string    
     const definitionWrapper = {definition, idx};
@@ -73,9 +91,16 @@ function addWordDefinition(word: Word, definition: Definition, idx: number) {
     dictionaryDefinitionIndex.add(idx, definition)
 }
 
+loadData();
+
+
+const app = express();
+app.use(cors());
 
 /**
+ * 
  * Get word Handler
+ * 
  */
 app.get('/dictionary/get/:word', dictionaryGetHandler);
 function dictionaryGetHandler(req: Request, res: Response) {
@@ -91,7 +116,7 @@ function dictionaryGetHandler(req: Request, res: Response) {
 
 /**
  * 
- * Set word handler
+ * Set (update/insert -> upsert) word handler
  * 
 */
 app.get('/dictionary/set/:word/:definition', dictionarySetHandler);
@@ -143,10 +168,9 @@ function dictionaryDeleteHandler(req: Request, res: Response) {
     // callOnDeleteHandlers() -> ex. update database, send kafka message, send notification to other nodes
 }
 
-
 /**
  * 
- * Dictionary definition search handler
+ * Dictionary Definition search handler
  * 
 */
 app.get('/dictionary/search_definitions', dictionarySearcDefinitionshHandler);
@@ -168,7 +192,8 @@ function dictionarySearcDefinitionshHandler(req: Request, res: Response) {
 
 /**
  * 
- * Word search handler which is ranked
+ * Dictionary Word search handler which is ranked by first strict tokenized matches,
+ * then forward tokenized matches and finally a full tokenized index matches.
  * 
 */
 app.get('/dictionary/search_words', dictionarySearchWordsRandkedHandler);
@@ -238,7 +263,7 @@ function dictionarySearchWordsRandkedHandler(req: Request, res: Response) {
 
 /**
  * 
- * Strict search only
+ * Dictionary Word strict search only
  * 
 */
 app.get('/dictionary/search_words_strict', dictionarySearchWordsHandlerStrict);
@@ -347,5 +372,4 @@ function dictionarySearchWordsHandlerFull(req: Request, res: Response) {
     res.status(200).json({query, limit, offset, suggest, results_length: results.length, results}).end();
 }
 
-loadData();
 app.listen(8081)
