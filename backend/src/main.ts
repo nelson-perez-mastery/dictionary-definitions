@@ -8,13 +8,13 @@ import { Log, loadJson } from './utils';
 const { Index } = require("flexsearch");
 
 // Indexes to search the words to be able to rank them.
-const profile = 'default'
+const profile = 'score'
 const async = false;
 const resolution = 9;
 const worker = false;
 const optimize = true;
-const context = true;
-const stemmer = true;
+const context = false;
+const stemmer = false;
 
 const dictionaryWordStrictIndex: any = new Index({tokenize: 'strict', profile, worker, resolution, async, optimize});
 const dictionaryWordForwardIndex: any = new Index({tokenize: 'forward', profile, worker, resolution, async, optimize});
@@ -42,17 +42,15 @@ function loadData() {
     Log.info('Memory before loadData');
     Log.memory();
 
-    console.time('loadData');
-    const dictionaryStr = fs.readFileSync('./data/dictionary.json', {encoding: 'utf-8', flag: 'r'});
-    const dictionaryJson = JSON.parse(dictionaryStr);
+    console.time('loadData() duration');
+    const dictionaryJson = loadJson('./data/dictionary.json', {});
     const dictionaryEntries = Object.entries(dictionaryJson) as [string, string][];
 
     for(let i = 0; i < dictionaryEntries.length; i++) {
         const [word, definition] = dictionaryEntries[i];
         addWordDefinition(word, definition, i);
     }
-    console.timeEnd('loadData');
-
+    console.timeEnd('loadData() duration');
     Log.info(`Done loading ${mbStr} dictionary with ${dictionaryEntries.length.toLocaleString('en-US')} records`);
     Log.info('Memory after loadData');
     Log.memory();
@@ -62,6 +60,7 @@ function addWordDefinition(word: Word, definition: Definition, idx: number) {
     // Creating reusable wrapper to avoid double memory creation of both map and array of entries definition string    
     const definitionWrapper = {definition, idx};
 
+    word = word.toLocaleLowerCase();
     dictionaryEntries.push([word, definitionWrapper]);
     dictionaryMap.set(word, definitionWrapper);
     
@@ -76,7 +75,7 @@ function addWordDefinition(word: Word, definition: Definition, idx: number) {
 
 
 /**
- * Get Word Handler
+ * Get word Handler
  */
 app.get('/dictionary/get/:word', dictionaryGetHandler);
 function dictionaryGetHandler(req: Request, res: Response) {
@@ -91,7 +90,9 @@ function dictionaryGetHandler(req: Request, res: Response) {
 } 
 
 /**
- * Set Word handler
+ * 
+ * Set word handler
+ * 
 */
 app.get('/dictionary/set/:word/:definition', dictionarySetHandler);
 function dictionarySetHandler(req: Request, res: Response) {
@@ -114,10 +115,61 @@ function dictionarySetHandler(req: Request, res: Response) {
     }
 
     res.status(200).json(response).end();
+
+    // callOnSetHandlers() -> ex. update database, send kafka message, send notification to other nodes
 }
 
 /**
- * Word search handler
+ * 
+ * Delete word handler
+ * 
+*/
+app.get('/dictionary/delete/:word', dictionaryDeleteHandler);
+function dictionaryDeleteHandler(req: Request, res: Response) {
+    const word = req.params.word.toLocaleLowerCase();
+
+    const prev = dictionaryMap.get(word);
+    if(prev) {
+        const idx = prev.idx;
+        dictionaryDefinitionIndex.remove(idx);
+        dictionaryWordStrictIndex.remove(idx);
+        dictionaryWordForwardIndex.remove(idx);
+        dictionaryWordFullIndex.remove(idx);
+        dictionaryMap.delete(word);
+        
+    }
+    res.status(200).json({success: true}).end();
+
+    // callOnDeleteHandlers() -> ex. update database, send kafka message, send notification to other nodes
+}
+
+
+/**
+ * 
+ * Dictionary definition search handler
+ * 
+*/
+app.get('/dictionary/search_definitions', dictionarySearcDefinitionshHandler);
+function dictionarySearcDefinitionshHandler(req: Request, res: Response) {
+    const query = String(req.query.q);
+
+    var limit = Number.parseInt(String(req.query.limit));
+    limit = isNaN(limit)? 25:limit;
+
+    var offset = Number.parseInt(String(req.query.offset));
+    offset = isNaN(offset)? 0:offset;
+
+    const suggest = (String(req.query.suggest).toLocaleLowerCase().trim() === 'false') ? false : true;
+
+    const resultIndexes = dictionaryDefinitionIndex.search(query, {limit, offset, suggest});
+    const results = resultIndexes.map((x: number) => dictionaryEntries[x]).map((x: [string, DefinitionWrapper]) => { return {word: x[0], definition: x[1].definition}});
+    res.status(200).json({query, limit, offset, suggest, results_length: results.length, results}).end();
+}
+
+/**
+ * 
+ * Word search handler which is ranked
+ * 
 */
 app.get('/dictionary/search_words', dictionarySearchWordsRandkedHandler);
 app.get('/dictionary/search_words_ranked', dictionarySearchWordsRandkedHandler);
@@ -185,7 +237,9 @@ function dictionarySearchWordsRandkedHandler(req: Request, res: Response) {
 }
 
 /**
- * Word search handler
+ * 
+ * Strict search only
+ * 
 */
 app.get('/dictionary/search_words_strict', dictionarySearchWordsHandlerStrict);
 function dictionarySearchWordsHandlerStrict(req: Request, res: Response) {
@@ -220,7 +274,9 @@ function dictionarySearchWordsHandlerStrict(req: Request, res: Response) {
 }
 
 /**
- * Word search handler
+ * 
+ * Forward word search only
+ * 
 */
 app.get('/dictionary/search_words_forward', dictionarySearchWordsHandlerForward);
 function dictionarySearchWordsHandlerForward(req: Request, res: Response) {
@@ -255,7 +311,9 @@ function dictionarySearchWordsHandlerForward(req: Request, res: Response) {
 }
 
 /**
- * Word search handler
+ * 
+ * Full word search only
+ * 
 */
 app.get('/dictionary/search_words_full', dictionarySearchWordsHandlerFull);
 function dictionarySearchWordsHandlerFull(req: Request, res: Response) {
@@ -286,26 +344,6 @@ function dictionarySearchWordsHandlerFull(req: Request, res: Response) {
     //preResults.sort((a, b) => a.word.length === b.word.length ? 0 : (a.word.length > b.word.length? 1 : -1));
     //preResults.length = Math.min(preResults.length, limit);
     const results = preResults.map(({word, wrapper: {definition}}) => {return {word: word, definition}});
-    res.status(200).json({query, limit, offset, suggest, results_length: results.length, results}).end();
-}
-
-/**
- * Definition search handler
-*/
-app.get('/dictionary/search_definitions', dictionarySearcDefinitionshHandler);
-function dictionarySearcDefinitionshHandler(req: Request, res: Response) {
-    const query = String(req.query.q);
-
-    var limit = Number.parseInt(String(req.query.limit));
-    limit = isNaN(limit)? 25:limit;
-
-    var offset = Number.parseInt(String(req.query.offset));
-    offset = isNaN(offset)? 0:offset;
-
-    const suggest = (String(req.query.suggest).toLocaleLowerCase().trim() === 'false') ? false : true;
-
-    const resultIndexes = dictionaryDefinitionIndex.search(query, {limit, offset, suggest});
-    const results = resultIndexes.map((x: number) => dictionaryEntries[x]).map((x: [string, DefinitionWrapper]) => { return {word: x[0], definition: x[1].definition}});
     res.status(200).json({query, limit, offset, suggest, results_length: results.length, results}).end();
 }
 
