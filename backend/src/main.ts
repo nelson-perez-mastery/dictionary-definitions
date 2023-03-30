@@ -348,7 +348,12 @@ function dictionarySearchWordsHandlerFull(req: Request, res: Response) {
 
 app.listen(8081);
 
-function listenForKafkaMessages(topic: string) {
+/**
+ * 
+ * Setup listening for kafka messages to replay the operations across all 
+ * 
+ */
+function listenForKafkaMessages(kafkaTopic: string, consumerGroupId: string) {
     const client: any = {
         on: (event: 'delete' | 'insert' | 'update' | 'get',
             func: (data: any, cb?: (error: any) => void) => void
@@ -376,4 +381,5 @@ function listenForKafkaMessages(topic: string) {
     });
 }
 
-listenForKafkaMessages('my-topic');
+// Each server has it's consumerGroupID to replay all changes.
+listenForKafkaMessages('my-topic', serverId + '-replays');
