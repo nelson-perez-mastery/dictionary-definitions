@@ -1,8 +1,10 @@
-import fs, { read, write } from 'fs';
+import fs from 'fs';
+
+/*********************************************************
+ * DO NOT COPY: This a personal private library code     *
+ *********************************************************/
 
 export const EMPTY_ARRAY: [] = [];
-
-
 export function loadJson<T>(filename: string, defaultValue: T): T {
     if(fs.existsSync(filename)) {
         let data: string;

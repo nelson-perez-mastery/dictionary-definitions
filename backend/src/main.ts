@@ -2,10 +2,19 @@ import express, {Request, Response} from 'express';
 import fs from 'fs';
 import cors from 'cors';
 import 'flexsearch';
-
 import { Log, loadJson } from './utils';
 
 const { Index } = require("flexsearch");
+
+// Type definitions
+type Word = string;
+type Definition = string;
+type DefinitionWrapper = {definition: Definition, id: number};
+
+
+// In memory Datastore
+const dictionaryEntries: [string, DefinitionWrapper][] = [];
+const dictionaryMap = new Map<Word, DefinitionWrapper>();
 
 // Indexes to search the words to be able to rank them.
 const profile = 'score'
@@ -16,172 +25,254 @@ const optimize = true;
 const context = false;
 const stemmer = false;
 
+// In memory Word search indexes
 const dictionaryWordStrictIndex: any = new Index({tokenize: 'strict', profile, worker, resolution, async, optimize});
 const dictionaryWordForwardIndex: any = new Index({tokenize: 'forward', profile, worker, resolution, async, optimize});
 const dictionaryWordFullIndex: any = new Index({tokenize: 'full', profile, worker, resolution, async, optimize, context, stemmer});
 
-// Index to search the definitions
+// In memory definition search index
 const dictionaryDefinitionIndex: any = new Index({tokenize: 'strict', profile, worker, resolution, async, optimize});
-type Word = string;
-type Definition = string
-type DefinitionWrapper = {definition: Definition, idx: number};
 
-const dictionaryEntries: [string, DefinitionWrapper][] = [];
-const dictionaryMap = new Map<Word, DefinitionWrapper>();
-
-type WordDefinition = { word: Word, definition: Definition }
-
-function sanitize(word: Word): Word  {
-    return word.toLocaleLowerCase().trim();
-}
 
 /**
- * 
- * Adds a Word and a Definition to the store
- * 
+ * Namespace for the utility functions
  */
-function addWordDefinition(word: Word, definition: Definition, idx: number) {
-    // Creating reusable wrapper to avoid double memory creation of both map and array of entries definition string    
-    const definitionWrapper = {definition, idx};
-
-    dictionaryEntries.push([word, definitionWrapper]);
-    dictionaryMap.set(word, definitionWrapper);
-    
-    // Word search index
-    dictionaryWordStrictIndex.add(idx, word);
-    dictionaryWordForwardIndex.add(idx, word);
-    dictionaryWordFullIndex.add(idx, word);
-
-    // Definition search index
-    dictionaryDefinitionIndex.add(idx, definition);
-}
-
-/**
- * 
- * Load the from the 21MB `./data/dictionary.json` file to the map, entries array and search indexes
- * 
- */
-function loadDictionaryAsset() {
-    const mbStr = fs.statSync('./data/dictionary.json').size.toMegaByteString();
-
-    // Loading the data to the index
-    Log.info(`Started loading ${mbStr} of dictionary data to the index`);
-    Log.info('Memory before loading the data');
-    Log.memory();
-
-    console.time('loading data duration');
-    const dictionaryJson = loadJson('./data/dictionary.json', {});
-    const dictionaryEntries = Object.entries(dictionaryJson) as [string, string][];
-
-    for(let i = 0; i < dictionaryEntries.length; i++) {
-        let [word, definition] = dictionaryEntries[i];
-        word = sanitize(word);
-        addWordDefinition(word, definition, i);
+namespace Utils {
+    export function sanitize(word: Word): Word  {
+        return word.toLocaleLowerCase().trim();
     }
-    console.timeEnd('loading data duration');
-    Log.info(`Done loading ${mbStr} dictionary with ${dictionaryEntries.length.toLocaleString('en-US')} records`);
-    Log.info('Memory after loading the data');
-    Log.memory();
+
+    /**
+     * 
+     * Adds a Word and a Definition to the in-memory database and search indexes
+     * 
+     * @param word Word on the dictionary to add;
+     * @param definition Definiton of the {@link word}
+     * @param idx Id determine the index in the entries
+     */
+    export function addWordDefinition(word: Word, definition: Definition, id: number) {
+        // Creating reusable wrapper to avoid double memory creation of both map and array of entries definition string    
+        const definitionWrapper = {definition, id};
+
+        dictionaryEntries.push([word, definitionWrapper]);
+        dictionaryMap.set(word, definitionWrapper);
+        
+        // Word search index
+        dictionaryWordStrictIndex.add(id, word);
+        dictionaryWordForwardIndex.add(id, word);
+        dictionaryWordFullIndex.add(id, word);
+
+        // Definition search index
+        dictionaryDefinitionIndex.add(id, definition);
+}
 }
 
-loadDictionaryAsset();
+/**
+ * Namespace that has all the data loading methods
+ */
+namespace Database_Loader {
+    /**
+     * 
+     * Simulates loading data from the database.
+     * Loads a 21MB file: `./data/dictionary.json` file to the map, entries array and search indexes
+     * 
+     */
+    function loadDictionaryAsset() {
+        const mbStr = fs.statSync('./data/dictionary.json').size.toMegaByteString();
 
-function onGetEvent(data: any)       { Log.info({msg: "Sending GET data to kafka",                            data})}
-function onInsertEvent(data: any)    { Log.info({msg: "Inserting to DB & Sending INSERT event data to kafka", data})}
-function onUpdateEvent(data: any)    { Log.info({msg: "Updating the DB & Sending UPDATE event data to kafka", data})}
-function onDeleteEvent(data: any)    { Log.info({msg: "Delete from DB & Sending DELETE data to kafka???",     data})}
+        // Loading the data to the index
+        Log.info(`Started loading ${mbStr} of dictionary data to the index`);
+        Log.info('Memory before loading the data');
+        Log.memory();
+
+        console.time('loading data duration');
+        const dictionaryJson = loadJson('./data/dictionary.json', {});
+        const dictionaryEntries = Object.entries(dictionaryJson) as [string, string][];
+
+        for(let i = 0; i < dictionaryEntries.length; i++) {
+            let [word, definition] = dictionaryEntries[i];
+            word = Utils.sanitize(word);
+            Utils.addWordDefinition(word, definition, i);
+        }
+        console.timeEnd('loading data duration');
+        Log.info(`Done loading ${mbStr} dictionary with ${dictionaryEntries.length.toLocaleString('en-US')} records`);
+        Log.info('Memory after loading the data');
+        Log.memory();
+    }
+
+    loadDictionaryAsset();
+}
 
 // Setup the web server
 const app = express();
 app.use(cors());
 
-const serverId = 'server-01';
-
 /**
- * 
- * Get word Handler
- * 
+ * Namespace for the CRUD operations
  */
-app.get('/dictionary/get/:word', dictionaryGetHandler);
-function dictionaryGetHandler(req: Request, res: Response) {
-    const word = sanitize(String(req.params.word));
-    const found = dictionaryMap.get(word);
-    if(!found) {
-        res.status(404).json({ error: "Word not found."}).end();
+namespace CRUD_Operations {
+    /**
+     * Server identifier to know if a kafka was generated by himself or some other server or pod
+     */
+    const serverId = process.env.SERVER_ID ?? 'Server-01'
+
+    // Mock event handler functions to simulate the writting to the database and sending the events to kafka
+    // for the other servers/pods to consume and replay locally.
+    function onGetEvent(data: any)       { Log.info({msg: "Sending GET data to kafka",                            data})}
+    function onInsertEvent(data: any)    { Log.info({msg: "Inserting to DB & Sending INSERT event data to kafka", data})}
+    function onUpdateEvent(data: any)    { Log.info({msg: "Updating the DB & Sending UPDATE event data to kafka", data})}
+    function onDeleteEvent(data: any)    { Log.info({msg: "Delete from DB & Sending DELETE data to kafka???",     data})}
+
+    /**
+     * 
+     * Get word Handler
+     * 
+     */
+    app.get('/dictionary/get/:word', dictionaryGetHandler);
+    function dictionaryGetHandler(req: Request, res: Response) {
+        const word = Utils.sanitize(String(req.params.word));
+        const found = dictionaryMap.get(word);
+        if(!found) {
+            res.status(404).json({ error: "Word not found."}).end();
+        }
+        else {
+            res.status(200).json({word, definition: found.definition}).end();
+        }
+        onGetEvent({serverId, word, result: found});
+    } 
+
+    /**
+     * 
+     * Set (update/insert -> upsert) word handler
+     * 
+    */
+    app.get('/dictionary/set/:word/:definition', dictionarySetHandler);
+    function dictionarySetHandler(req: Request, res: Response) {
+        const word = Utils.sanitize(req.params.word)
+        const definition = req.params.definition;
+        const response = dictionarySet(word, definition, false);
+        res.status(200).json(response).end();
     }
-    else {
-        res.status(200).json({word, definition: found.definition}).end();
+
+    /**
+     * 
+     * Updates or insert (upsert) a word and it's definition to the in memory db
+     * 
+     * @param word Word to insert or update
+     * @param definition Definition of the word
+     * @param replay Flag to state if this is a replay comming from another server
+     * @returns The Set response
+     */
+    function dictionarySet(word: string, definition: string, replay: boolean) {
+        const current = dictionaryMap.get(word);
+        const response = {success: true, insertOrUpdate: 'unknown'};
+        var before: any = undefined;
+        if(current) {
+            before = {word, current}
+
+            // Update the definition on the index
+            dictionaryDefinitionIndex.update(current.id, definition);
+            response.insertOrUpdate = 'update';
+            // Updating definition on the wrapper reference shared by the map and entries array
+            current.definition = definition;
+
+            const after = {word, definition};
+            if(!replay) onUpdateEvent({serverId, word, definition, response, before, after});    
+        }
+        else {
+            Utils.addWordDefinition(word, definition, dictionaryEntries.length);
+            response.insertOrUpdate = 'insert'
+            if(!replay) onInsertEvent({serverId, word, definition, response, after: {word, definition}});
+        }
+
+        return response;
     }
-    onGetEvent({serverId, word, result: found});
-} 
+
+    /**
+     * 
+     * Delete word handler
+     * 
+    */
+    app.get('/dictionary/delete/:word', dictionaryDeleteHandler);
+    function dictionaryDeleteHandler(req: Request, res: Response) {
+        const word = Utils.sanitize(req.params.word);
+        const response = dictionaryDelete(word, false);
+        res.status(200).json(response).end();
+    }
+
+    /**
+     * Function that actually deletes a record from the in memory db
+     * 
+     * @param word Word to delete
+     * @param replay Flag to know if this is a command replay from another server
+     * @returns Delete response
+     */
+    function dictionaryDelete(word: string, replay: boolean) {
+        const prev = dictionaryMap.get(word);
+        if(prev) {
+            const id = prev.id;
+            dictionaryDefinitionIndex.remove(id);
+            dictionaryWordStrictIndex.remove(id);
+            dictionaryWordForwardIndex.remove(id);
+            dictionaryWordFullIndex.remove(id);
+            dictionaryMap.delete(word);
+        }
+        if(!replay) onDeleteEvent({serverId, word, deleted: {word, definition: prev?.definition}});
+        return {success: true};
+        // callOnDeleteHandlers() -> ex. update database, send kafka message, send notification to other nodes
+    }
+
+    /**
+     * 
+     * Mock function to setup listening for kafka messages and replay the operations events
+     * from other servers/pods across the cluster.
+     * 
+     * @param kafkaTopic        Kafka topic to listen to
+     * @param consumerGroupId   Consumer group for this specific server
+     */
+    function listenForKafkaMessages(kafkaTopic: string, consumerGroupId: string) {
+        const client: any = {
+            on: (event: 'delete' | 'insert' | 'update' | 'get',
+                func: (data: any, cb?: (error: any) => void) => void
+            ) => {            
+                func({msg: event, data: {serverId, word: 'word', otherData: ['definition', 'other']}});
+            },
+        }
+
+        // Replays the insert events from other servers/pods
+        client.on('insert', (data: any) => {
+            // Ignoring his own events
+            if(data.serverId != serverId) {
+                dictionarySet(data.word, data.definition, true);
+            }
+        });
+
+        // Replays the update events from other servers/pods
+        client.on('update', (data: any) => {
+            // Ignores his own events
+            if(data.serverId != serverId) {
+                dictionarySet(data.word, data.definition, true);
+            }
+        });
+
+        // Replays deletes events from other servers/pods
+        client.on('delete', (data: any) => {
+            // Ignores his own events
+            if(data.serverId != serverId) {
+                dictionaryDelete(data.word, true);
+            }
+        });
+        
+    }
+
+    // Each server has it's consumerGroupID to replay all changes.
+    listenForKafkaMessages('my-topic', serverId + '-replays');
+}
 
 /**
- * 
- * Set (update/insert -> upsert) word handler
- * 
-*/
-app.get('/dictionary/set/:word/:definition', dictionarySetHandler);
-function dictionarySetHandler(req: Request, res: Response) {
-    const word = sanitize(req.params.word)
-    const definition = req.params.definition;
-    const response = dictionarySet(word, definition, false);
-    res.status(200).json(response).end();
-}
-
-function dictionarySet(word: string, definition: string, replay: boolean) {
-    const current = dictionaryMap.get(word);
-    const response = {success: true, insertOrUpdate: 'unknown'};
-    var before: any = undefined;
-    if(current) {
-        before = {word, current}
-
-        // Update the definition on the index
-        dictionaryDefinitionIndex.update(current.idx, definition);
-        response.insertOrUpdate = 'update';
-        // Updating definition on the wrapper reference shared by the map and entries array
-        current.definition = definition;
-
-        const after = {word, definition};
-        if(!replay) onUpdateEvent({serverId, word, definition, response, before, after});    
-    }
-    else {
-        addWordDefinition(word, definition, dictionaryEntries.length);
-        response.insertOrUpdate = 'insert'
-        if(!replay) onInsertEvent({serverId, word, definition, response, after: {word, definition}});
-    }
-
-    return response;
-    // callOnSetHandlers() -> ex. update database, send kafka message, send notification to other nodes
-}
-
-/**
- * 
- * Delete word handler
- * 
-*/
-app.get('/dictionary/delete/:word', dictionaryDeleteHandler);
-function dictionaryDeleteHandler(req: Request, res: Response) {
-    const word = sanitize(req.params.word);
-    const response = dictionaryDelete(word, false);
-    res.status(200).json(response).end();
-}
-
-function dictionaryDelete(word: string, replay: boolean) {
-    const prev = dictionaryMap.get(word);
-    if(prev) {
-        const idx = prev.idx;
-        dictionaryDefinitionIndex.remove(idx);
-        dictionaryWordStrictIndex.remove(idx);
-        dictionaryWordForwardIndex.remove(idx);
-        dictionaryWordFullIndex.remove(idx);
-        dictionaryMap.delete(word);
-    }
-    if(!replay) onDeleteEvent({serverId, word, deleted: {word, definition: prev?.definition}});
-    return {success: true};
-    // callOnDeleteHandlers() -> ex. update database, send kafka message, send notification to other nodes
-}
-
-namespace Search {
+ * Namespace for search operations
+ */
+namespace Search_Operations {
     /**
      * 
      * Dictionary Definition search handler
@@ -189,7 +280,7 @@ namespace Search {
     */
     app.get('/dictionary/search_definitions', dictionarySearcDefinitionshHandler);
     function dictionarySearcDefinitionshHandler(req: Request, res: Response) {
-        const query = sanitize(String(req.query.q));
+        const query = Utils.sanitize(String(req.query.q));
 
         var limit = Number.parseInt(String(req.query.limit));
         limit = isNaN(limit)? 25:limit;
@@ -204,6 +295,19 @@ namespace Search {
         res.status(200).json({query, limit, offset, suggest, results_length: results.length, results}).end();
     }
 
+
+    /**
+     * 
+     * Dictionary Word search handler which is ranked by first strict tokenized matches,
+     * then forward tokenized matches and finally a full tokenized index matches.
+     * 
+    */
+    app.get('/dictionary/search_words', dictionarySearchWordsRandkedHandler);
+    app.get('/dictionary/search_words_ranked', dictionarySearchWordsRandkedHandler);
+    function dictionarySearchWordsRandkedHandler(req: Request, res: Response) {
+        dictionarySearchWordsRandkedHandlerHelper(req, res, true, true, true, true);
+    }
+    
     /**
      * 
      * Dictionary Word search handler helper which is ranked by tokenizer of strict, forward, 
@@ -211,7 +315,7 @@ namespace Search {
      * 
      */
     function dictionarySearchWordsRandkedHandlerHelper(req: Request, res: Response, strict: boolean, forward: boolean, full: boolean, sort: boolean = true) {
-        const query = sanitize(String(req.query.q))//.split(' ');
+        const query = Utils.sanitize(String(req.query.q)); //.split(' ');
 
         var limit = Number.parseInt(String(req.query.limit));
         limit = isNaN(limit)? 25:limit;
@@ -273,51 +377,6 @@ namespace Search {
         res.status(200).json({query, limit, offset, suggest, results_length: results.length, results}).end();
     }
 
-    /**
-     * 
-     * Dictionary Word search handler which is ranked by first strict tokenized matches,
-     * then forward tokenized matches and finally a full tokenized index matches.
-     * 
-    */
-    app.get('/dictionary/search_words', dictionarySearchWordsRandkedHandler);
-    app.get('/dictionary/search_words_ranked', dictionarySearchWordsRandkedHandler);
-    function dictionarySearchWordsRandkedHandler(req: Request, res: Response) {
-        dictionarySearchWordsRandkedHandlerHelper(req, res, true, true, true, true);
-    }
-
-    /**
-     * Helper handler for the dictionary word search handlers
-     */
-    function searchWordHandlerHelper(req: Request, res: Response, strict: boolean, forward: boolean, full: boolean, sort: boolean = false): void {
-        const query = String(req.query.q);
-
-        var limit = Number.parseInt(String(req.query.limit));
-        limit = isNaN(limit)? 25 : limit;
-
-        var offset = Number.parseInt(String(req.query.offset));
-        offset = isNaN(offset)? 0:offset;
-
-        const suggest = (String(req.query.suggest).toLocaleLowerCase().trim() === 'false') ? false : true;
-
-        const preResults: {word: Word, wrapper: DefinitionWrapper}[] = [];
-
-        const strictResultIndexes: number[] = strict ? dictionaryWordStrictIndex.search(query, {limit, offset, suggest: true}): [];
-        const forwardResultIndexes: number[] = forward ? dictionaryWordForwardIndex.search(query, {limit, offset, suggest: true}): [];
-        const fullResultIndexes: number[] = full ? dictionaryWordFullIndex.search(query, {limit, offset, suggest}) : [];
-
-        const allIndexes = [...strictResultIndexes, ...forwardResultIndexes, ...fullResultIndexes]
-        const allIndexSet = new Set<number>(allIndexes);
-
-        for(let idx of allIndexSet) {
-            const [word, wrapper] = dictionaryEntries[idx];
-            preResults.push({word, wrapper});
-        }
-
-        if(sort) preResults.sort((a, b) => a.word.length === b.word.length ? 0 : (a.word.length > b.word.length? 1 : -1));
-        //preResults.length = Math.min(preResults.length, limit);
-        const results = preResults.map(({word, wrapper: {definition}}) => {return {word: word, definition}});
-        res.status(200).json({query, limit, offset, suggest, results_length: results.length, results}).end();
-    }
 
     /**
      * 
@@ -348,42 +407,42 @@ namespace Search {
     function dictionarySearchWordsHandlerFull(req: Request, res: Response) {
         searchWordHandlerHelper(req, res, false, false, true);
     }
-}
 
-app.listen(8081);
+    /**
+     * Helper handler for the dictionary word search handlers
+     */
+    function searchWordHandlerHelper(req: Request, res: Response, strict: boolean, forward: boolean, full: boolean, sort: boolean = false): void {
+        const query = Utils.sanitize(String(req.query.q)); //.split(' ')
 
-/**
- * 
- * Setup listening for kafka messages to replay the operations across all 
- * 
- */
-function listenForKafkaMessages(kafkaTopic: string, consumerGroupId: string) {
-    const client: any = {
-        on: (event: 'delete' | 'insert' | 'update' | 'get',
-            func: (data: any, cb?: (error: any) => void) => void
-        ) => {            
-            func({msg: event, data: {serverId, word: 'word', otherData: ['definition', 'other']}});
-        },
+        var limit = Number.parseInt(String(req.query.limit));
+        limit = isNaN(limit)? 25 : limit;
+
+        var offset = Number.parseInt(String(req.query.offset));
+        offset = isNaN(offset)? 0:offset;
+
+        const suggest = (String(req.query.suggest).toLocaleLowerCase().trim() === 'false') ? false : true;
+
+        const preResults: {word: Word, wrapper: DefinitionWrapper}[] = [];
+
+        const strictResultIndexes: number[] = strict ? dictionaryWordStrictIndex.search(query, {limit, offset, suggest: true}): [];
+        const forwardResultIndexes: number[] = forward ? dictionaryWordForwardIndex.search(query, {limit, offset, suggest: true}): [];
+        const fullResultIndexes: number[] = full ? dictionaryWordFullIndex.search(query, {limit, offset, suggest}) : [];
+
+        const allIndexes = [...strictResultIndexes, ...forwardResultIndexes, ...fullResultIndexes]
+        const allIndexSet = new Set<number>(allIndexes);
+
+        for(let idx of allIndexSet) {
+            const [word, wrapper] = dictionaryEntries[idx];
+            preResults.push({word, wrapper});
+        }
+
+        if(sort) preResults.sort((a, b) => a.word.length === b.word.length ? 0 : (a.word.length > b.word.length? 1 : -1));
+        //preResults.length = Math.min(preResults.length, limit);
+        const results = preResults.map(({word, wrapper: {definition}}) => {return {word: word, definition}});
+        res.status(200).json({query, limit, offset, suggest, results_length: results.length, results}).end();
     }
-
-    client.on('delete', (data: any) => {
-        if(data.serverId != serverId) {
-            dictionaryDelete(data.word, true);
-        }
-    });
-
-    client.on('insert', (data: any) => {
-        if(data.serverId != serverId) {
-            dictionarySet(data.word, data.definition, true);
-        }
-    });
-
-    client.on('update', (data: any) => {
-        if(data.serverId != serverId) {
-            dictionarySet(data.word, data.definition, true);
-        }
-    });
 }
 
-// Each server has it's consumerGroupID to replay all changes.
-listenForKafkaMessages('my-topic', serverId + '-replays');
+// Listen on port 8081
+app.listen(8081);
+Log.info('READY: Accepting connections on http://localhost:8081');
