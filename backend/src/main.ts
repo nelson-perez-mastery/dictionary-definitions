@@ -34,6 +34,7 @@ type WordDefinition = { word: Word, definition: Definition }
 function sanitize(word: Word): Word  {
     return word.toLocaleLowerCase().trim();
 }
+
 /**
  * 
  * Adds a Word and a Definition to the store
@@ -47,12 +48,12 @@ function addWordDefinition(word: Word, definition: Definition, idx: number) {
     dictionaryMap.set(word, definitionWrapper);
     
     // Word search index
-    dictionaryWordStrictIndex.add(idx, word),
-    dictionaryWordForwardIndex.add(idx, word),
-    dictionaryWordFullIndex.add(idx, word),
+    dictionaryWordStrictIndex.add(idx, word);
+    dictionaryWordForwardIndex.add(idx, word);
+    dictionaryWordFullIndex.add(idx, word);
 
     // Definition search index
-    dictionaryDefinitionIndex.add(idx, definition)
+    dictionaryDefinitionIndex.add(idx, definition);
 }
 
 /**
@@ -85,10 +86,10 @@ function loadDictionaryAsset() {
 
 loadDictionaryAsset();
 
-async function onGetEvent(data: any)       { Log.info({msg: "Sending GET data to kafka???",       data}); }
-async function onInsertEvent(data: any)    { Log.info({msg: "Sending INSERT data to kafka???",    data}); }
-async function onUpdateEvent(data: any)    { Log.info({msg: "Sending UPDATE data to kafka???",    data}) };
-async function onDeleteEvent(data: any)    { Log.info({msg: "Sending DELETE data to kafka???",    data}); }
+function onGetEvent(data: any)       { Log.info({msg: "Sending GET data to kafka",                            data})}
+function onInsertEvent(data: any)    { Log.info({msg: "Inserting to DB & Sending INSERT event data to kafka", data})}
+function onUpdateEvent(data: any)    { Log.info({msg: "Updating the DB & Sending UPDATE event data to kafka", data})}
+function onDeleteEvent(data: any)    { Log.info({msg: "Delete from DB & Sending DELETE data to kafka???",     data})}
 
 // Setup the web server
 const app = express();
@@ -109,9 +110,9 @@ function dictionaryGetHandler(req: Request, res: Response) {
         res.status(404).json({ error: "Word not found."}).end();
     }
     else {
-        res.status(200).json({serverId, word, definition: found.definition}).end();
+        res.status(200).json({word, definition: found.definition}).end();
     }
-    onGetEvent({word, result: found});
+    onGetEvent({serverId, word, result: found});
 } 
 
 /**
