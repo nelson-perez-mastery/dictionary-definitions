@@ -6,6 +6,7 @@ Dictionary Definition NodeJS app test CRUD operations of in memory "db" with in-
 ## Setup
 
 ```sh
+cd backend
 npm install
 npm start
 ```
